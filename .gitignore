@@ -1,1 +1,10 @@
+# .gitignore
 .env
+__pycache__/
+*.pyc
+*.pyo
+query_history.db
+*.db
+.venv/
+venv/
+.streamlit/secrets.toml

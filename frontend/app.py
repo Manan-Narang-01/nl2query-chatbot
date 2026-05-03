@@ -3,9 +3,21 @@ import os
 import streamlit as st
 import requests
 from datetime import datetime
-from dotenv import load_dotenv
 
-load_dotenv()
+# ─── Load config (works both locally and on Streamlit Cloud) ──────────────────
+
+try:
+    # Streamlit Cloud — uses secrets.toml
+    API_BASE_URL = st.secrets["API_BASE_URL"]
+    API_KEY      = st.secrets["STREAMLIT_API_KEY"]
+except Exception:
+    # Local development — uses .env
+    from dotenv import load_dotenv
+    load_dotenv()
+    API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+    API_KEY      = os.getenv("STREAMLIT_API_KEY", "nlq-key-dev999")
+
+HEADERS = {"X-API-Key": API_KEY}
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 
@@ -17,10 +29,6 @@ st.set_page_config(
 )
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-
-API_BASE_URL = "http://127.0.0.1:8000"
-API_KEY      = os.getenv("STREAMLIT_API_KEY", "nlq-key-dev999")
-HEADERS      = {"X-API-Key": API_KEY}
 
 DB_TYPES = ["postgresql", "mysql", "mongodb", "oracle"]
 
@@ -61,6 +69,9 @@ if "chat_history" not in st.session_state:
 
 if "selected_db" not in st.session_state:
     st.session_state.selected_db = "postgresql"
+
+if "conversions" not in st.session_state:
+    st.session_state.conversions = []
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 
@@ -124,10 +135,7 @@ with st.sidebar:
     # API status
     st.subheader("API status")
     try:
-        res = requests.get(
-            f"{API_BASE_URL}/health",
-            timeout=3
-        )
+        res = requests.get(f"{API_BASE_URL}/health", timeout=3)
         if res.status_code == 200:
             data = res.json()
             st.success(f"Online — {data.get('groq_model', '')}")
@@ -136,7 +144,7 @@ with st.sidebar:
     except Exception:
         st.error("API offline — start FastAPI server")
 
-    # API key status
+    # Auth status
     st.subheader("Auth status")
     if API_KEY and API_KEY != "nlq-key-dev999":
         st.success("API key loaded from .env")
@@ -146,7 +154,6 @@ with st.sidebar:
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-# Replace tabs line in frontend/app.py
 tab_chat, tab_convert, tab_schema, tab_history, tab_stats = st.tabs([
     "💬 Chat",
     "🔄 Query Converter",
@@ -154,6 +161,7 @@ tab_chat, tab_convert, tab_schema, tab_history, tab_stats = st.tabs([
     "📜 Query History",
     "📊 Stats"
 ])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — CHAT
@@ -223,7 +231,6 @@ with tab_chat:
                             st.markdown("**Generated query:**")
                             lang = "javascript" if selected_db == "mongodb" else "sql"
                             st.code(data["generated_query"], language=lang)
-
                             st.session_state.chat_history.append({
                                 "question":        question,
                                 "db_type":         selected_db,
@@ -235,14 +242,12 @@ with tab_chat:
                                 "error_message":   None,
                                 "timestamp":       datetime.now().strftime("%H:%M:%S")
                             })
-
                         elif response.status_code == 401:
                             st.error("Unauthorized — check your API key in .env")
                         elif response.status_code == 403:
                             st.error("Forbidden — invalid API key")
                         else:
-                            err = response.json().get("detail", "API error")
-                            st.error(f"Error: {err}")
+                            st.error(f"Error: {response.json().get('detail', 'API error')}")
 
                     else:
                         response = requests.post(
@@ -290,19 +295,18 @@ with tab_chat:
                                 "error_message":   data.get("error_message"),
                                 "timestamp":       datetime.now().strftime("%H:%M:%S")
                             })
-
                         elif response.status_code == 401:
                             st.error("Unauthorized — check your API key in .env")
                         elif response.status_code == 403:
                             st.error("Forbidden — invalid API key")
                         else:
-                            err = response.json().get("detail", "API error")
-                            st.error(f"Error: {err}")
+                            st.error(f"Error: {response.json().get('detail', 'API error')}")
 
                 except requests.exceptions.ConnectionError:
                     st.error("Cannot connect to API. Make sure FastAPI is running on port 8000.")
                 except Exception as e:
                     st.error(f"Unexpected error: {str(e)}")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — QUERY CONVERTER
@@ -311,8 +315,6 @@ with tab_chat:
 with tab_convert:
     st.title("🔄 Query Converter")
     st.caption("Convert any database query from one database type to another instantly.")
-
-    # ── Conversion form ───────────────────────────────────────────────────────
 
     col_src, col_arrow, col_tgt = st.columns([5, 1, 5])
 
@@ -333,7 +335,6 @@ with tab_convert:
         )
 
     with col_tgt:
-        # Default target to next DB in list
         default_idx = (DB_TYPES.index(source_db) + 1) % len(DB_TYPES)
         target_db = st.selectbox(
             "Target database",
@@ -345,8 +346,6 @@ with tab_convert:
 
     st.divider()
 
-    # ── Query input ───────────────────────────────────────────────────────────
-
     input_query = st.text_area(
         label="Paste your query here",
         placeholder=f"Paste your {source_db.upper()} query here...",
@@ -354,7 +353,6 @@ with tab_convert:
         key="conv_input"
     )
 
-    # Quick example loader
     st.caption("Quick examples:")
     ex_col1, ex_col2, ex_col3 = st.columns(3)
 
@@ -390,11 +388,8 @@ with tab_convert:
                 '}'
             )
 
-    # Handle prefill from example buttons
     if "conv_prefill" in st.session_state:
         input_query = st.session_state.pop("conv_prefill")
-
-    # ── Convert button ────────────────────────────────────────────────────────
 
     convert_clicked = st.button(
         label=f"🔄 Convert {source_db.upper()} → {target_db.upper()}",
@@ -422,52 +417,25 @@ with tab_convert:
 
                     if response.status_code == 200:
                         data = response.json()
-
                         st.success(
                             f"Successfully converted "
                             f"{DB_ICONS[source_db]} {source_db.upper()} → "
                             f"{DB_ICONS[target_db]} {target_db.upper()}"
                         )
-
-                        # Side by side comparison
                         st.divider()
                         left, right = st.columns(2)
-
                         with left:
-                            st.markdown(
-                                f"**{DB_ICONS[source_db]} Original "
-                                f"({source_db.upper()}):**"
-                            )
-                            lang_src = (
-                                "javascript"
-                                if source_db == "mongodb"
-                                else "sql"
-                            )
+                            st.markdown(f"**{DB_ICONS[source_db]} Original ({source_db.upper()}):**")
+                            lang_src = "javascript" if source_db == "mongodb" else "sql"
                             st.code(data["original_query"], language=lang_src)
-
                         with right:
-                            st.markdown(
-                                f"**{DB_ICONS[target_db]} Converted "
-                                f"({target_db.upper()}):**"
-                            )
-                            lang_tgt = (
-                                "javascript"
-                                if target_db == "mongodb"
-                                else "sql"
-                            )
-                            st.code(
-                                data["converted_query"],
-                                language=lang_tgt
-                            )
+                            st.markdown(f"**{DB_ICONS[target_db]} Converted ({target_db.upper()}):**")
+                            lang_tgt = "javascript" if target_db == "mongodb" else "sql"
+                            st.code(data["converted_query"], language=lang_tgt)
 
-                        # Conversion notes
                         if data.get("notes"):
                             st.divider()
                             st.info(f"📝 **Conversion notes:** {data['notes']}")
-
-                        # Save to session for re-use
-                        if "conversions" not in st.session_state:
-                            st.session_state.conversions = []
 
                         st.session_state.conversions.append({
                             "source_db":       source_db,
@@ -481,20 +449,14 @@ with tab_convert:
                     elif response.status_code in (401, 403):
                         st.error("Unauthorized — check your API key in .env")
                     else:
-                        err = response.json().get("detail", "API error")
-                        st.error(f"Conversion failed: {err}")
+                        st.error(f"Conversion failed: {response.json().get('detail', 'API error')}")
 
                 except requests.exceptions.ConnectionError:
-                    st.error(
-                        "Cannot connect to API. "
-                        "Make sure FastAPI is running on port 8000."
-                    )
+                    st.error("Cannot connect to API. Make sure FastAPI is running on port 8000.")
                 except Exception as e:
                     st.error(f"Unexpected error: {str(e)}")
 
-    # ── Previous conversions ──────────────────────────────────────────────────
-
-    if st.session_state.get("conversions"):
+    if st.session_state.conversions:
         st.divider()
         st.subheader("Previous conversions this session")
         for conv in reversed(st.session_state.conversions):
@@ -514,8 +476,8 @@ with tab_convert:
                     st.code(conv["converted_query"], language=lang)
                 if conv.get("notes"):
                     st.caption(f"📝 {conv['notes']}")
-                    
-                    
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — SCHEMA SUGGESTION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -527,10 +489,7 @@ with tab_schema:
         "— get a complete production-ready database schema instantly."
     )
 
-    # ── Input form ────────────────────────────────────────────────────────────
-
     col_left, col_right = st.columns([3, 1])
-
     with col_left:
         schema_db_type = st.selectbox(
             "Target database",
@@ -538,7 +497,6 @@ with tab_schema:
             format_func=lambda x: f"{DB_ICONS[x]} {x.upper()}",
             key="schema_db_type"
         )
-
     with col_right:
         include_sample = st.checkbox(
             "Include sample data",
@@ -546,7 +504,6 @@ with tab_schema:
             key="include_sample"
         )
 
-    # Example requirement buttons
     st.caption("Quick examples — click to load:")
     ex1, ex2, ex3, ex4 = st.columns(4)
 
@@ -560,7 +517,6 @@ with tab_schema:
                 "Each order has a payment record and a shipping address. "
                 "Products can have reviews and ratings from users."
             )
-
     with ex2:
         if st.button("🏥 Hospital", use_container_width=True):
             st.session_state["schema_prefill"] = (
@@ -571,7 +527,6 @@ with tab_schema:
                 "Patients can book appointments with doctors. "
                 "Each appointment can result in a prescription with medicines."
             )
-
     with ex3:
         if st.button("📚 LMS", use_container_width=True):
             st.session_state["schema_prefill"] = (
@@ -582,7 +537,6 @@ with tab_schema:
                 "Instructors can create quizzes and assignments. "
                 "Students receive certificates on course completion."
             )
-
     with ex4:
         if st.button("🏦 Banking", use_container_width=True):
             st.session_state["schema_prefill"] = (
@@ -594,7 +548,6 @@ with tab_schema:
                 "System should support loans with repayment schedules."
             )
 
-    # Handle prefill
     prefill_schema = st.session_state.pop("schema_prefill", "")
 
     requirement = st.text_area(
@@ -608,9 +561,7 @@ with tab_schema:
         key="schema_requirement"
     )
 
-    # Character count
-    char_count = len(requirement)
-    st.caption(f"{char_count}/3000 characters")
+    st.caption(f"{len(requirement)}/3000 characters")
 
     generate_clicked = st.button(
         label="🏗️ Generate Schema",
@@ -618,8 +569,6 @@ with tab_schema:
         use_container_width=True,
         disabled=not requirement.strip()
     )
-
-    # ── Results ───────────────────────────────────────────────────────────────
 
     if generate_clicked and requirement.strip():
         with st.spinner("Analyzing requirements and generating schema..."):
@@ -637,24 +586,17 @@ with tab_schema:
 
                 if response.status_code == 200:
                     data = response.json()
-
                     st.success(
-                        f"Generated schema with "
-                        f"{len(data['tables'])} tables for "
-                        f"{DB_ICONS[schema_db_type]} {schema_db_type.upper()}"
+                        f"Generated schema with {len(data['tables'])} tables "
+                        f"for {DB_ICONS[schema_db_type]} {schema_db_type.upper()}"
                     )
-
-                    # ── Overview metrics ──────────────────────────────────────
                     st.divider()
+
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Tables",        len(data["tables"]))
                     m2.metric("Relationships", len(data["relationships"]))
-                    total_cols = sum(
-                        len(t["columns"]) for t in data["tables"]
-                    )
-                    m3.metric("Total columns", total_cols)
+                    m3.metric("Total columns", sum(len(t["columns"]) for t in data["tables"]))
 
-                    # ── Tabs inside schema result ─────────────────────────────
                     st.divider()
                     r_tab1, r_tab2, r_tab3, r_tab4 = st.tabs([
                         "📋 Tables",
@@ -663,36 +605,31 @@ with tab_schema:
                         "📥 Sample Data"
                     ])
 
-                    # Tables tab
                     with r_tab1:
                         for table in data["tables"]:
                             with st.expander(
-                                f"📋 {table['table_name'].upper()} "
-                                f"— {table['description']}",
+                                f"📋 {table['table_name'].upper()} — {table['description']}",
                                 expanded=True
                             ):
-                                # Build column table
-                                col_data = []
-                                for col in table["columns"]:
-                                    col_data.append({
+                                col_data = [
+                                    {
                                         "Column":      col["name"],
                                         "Type":        col["type"],
                                         "Constraints": col.get("constraints") or "—",
                                         "Description": col.get("description") or "—"
-                                    })
+                                    }
+                                    for col in table["columns"]
+                                ]
                                 st.dataframe(
                                     col_data,
                                     use_container_width=True,
                                     hide_index=True
                                 )
-
-                                # Indexes
                                 if table.get("indexes"):
                                     st.markdown("**Indexes:**")
                                     for idx in table["indexes"]:
                                         st.code(idx, language="sql")
 
-                    # Relationships tab
                     with r_tab2:
                         st.markdown("### Table Relationships")
                         if data["relationships"]:
@@ -700,29 +637,16 @@ with tab_schema:
                                 st.markdown(f"- `{rel}`")
                         else:
                             st.info("No relationships defined")
-
                         if data.get("design_notes"):
                             st.divider()
                             st.markdown("### Design Notes")
                             st.info(data["design_notes"])
 
-                    # CREATE Scripts tab
                     with r_tab3:
                         st.markdown("### Complete CREATE Scripts")
-                        st.caption(
-                            "Copy and run these scripts in your database"
-                        )
-                        lang = (
-                            "javascript"
-                            if schema_db_type == "mongodb"
-                            else "sql"
-                        )
-                        st.code(
-                            data["create_scripts"],
-                            language=lang
-                        )
-
-                        # Download button
+                        st.caption("Copy and run these scripts in your database")
+                        lang = "javascript" if schema_db_type == "mongodb" else "sql"
+                        st.code(data["create_scripts"], language=lang)
                         ext = "js" if schema_db_type == "mongodb" else "sql"
                         st.download_button(
                             label=f"⬇️ Download .{ext} file",
@@ -732,14 +656,10 @@ with tab_schema:
                             use_container_width=True
                         )
 
-                    # Sample data tab
                     with r_tab4:
                         if data.get("sample_data"):
                             st.markdown("### Sample INSERT Statements")
-                            st.code(
-                                data["sample_data"],
-                                language="sql"
-                            )
+                            st.code(data["sample_data"], language="sql")
                             st.download_button(
                                 label="⬇️ Download sample data",
                                 data=data["sample_data"],
@@ -756,16 +676,14 @@ with tab_schema:
                 elif response.status_code in (401, 403):
                     st.error("Unauthorized — check your API key in .env")
                 else:
-                    err = response.json().get("detail", "API error")
-                    st.error(f"Schema generation failed: {err}")
+                    st.error(f"Schema generation failed: {response.json().get('detail', 'API error')}")
 
             except requests.exceptions.ConnectionError:
-                st.error(
-                    "Cannot connect to API. "
-                    "Make sure FastAPI is running on port 8000."
-                )
+                st.error("Cannot connect to API. Make sure FastAPI is running on port 8000.")
             except Exception as e:
                 st.error(f"Unexpected error: {str(e)}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — HISTORY
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -803,7 +721,6 @@ with tab_history:
             except Exception:
                 st.error("Could not clear history")
 
-    # Fetch history
     try:
         if search_term:
             res = requests.get(
@@ -853,7 +770,6 @@ with tab_history:
                         )
             else:
                 st.info("No history yet — ask some questions first!")
-
         elif res.status_code in (401, 403):
             st.error("Unauthorized — check API key in .env")
         else:
@@ -864,7 +780,7 @@ with tab_history:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — STATS
+# TAB 5 — STATS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with tab_stats:
@@ -882,7 +798,6 @@ with tab_stats:
         if res.status_code == 200:
             stats = res.json()
 
-            # Metric cards
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total queries", stats["total"])
             c2.metric("Executed",      stats["success"])
@@ -891,7 +806,6 @@ with tab_stats:
 
             st.divider()
 
-            # DB breakdown
             st.subheader("Queries by database")
             by_db = stats.get("by_db", {})
             if by_db:
