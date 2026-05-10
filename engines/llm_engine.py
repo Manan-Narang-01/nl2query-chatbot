@@ -1,8 +1,9 @@
 # engines/llm_engine.py
 import json
+import re
 from groq import Groq
 from config import settings
-import re  
+
 client = Groq(api_key=settings.GROQ_API_KEY)
 
 
@@ -81,22 +82,11 @@ def generate_query(
 ) -> str:
     """
     Send user question to Groq and get back a database query.
-
-    Args:
-        question:       Natural language question from user
-        db_type:        One of postgresql | mysql | mongodb | oracle
-        schema_context: Optional table/collection schema string
-
-    Returns:
-        Generated query string (SQL or JSON for MongoDB)
     """
-
-    # Build user message
     user_message = f"Question: {question}"
     if schema_context:
         user_message += f"\n\nDatabase Schema:\n{schema_context}"
 
-    # Pick the right system prompt
     system_prompt = SYSTEM_PROMPTS.get(db_type.lower())
     if not system_prompt:
         raise ValueError(f"Unsupported db_type: {db_type}")
@@ -108,16 +98,13 @@ def generate_query(
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user",   "content": user_message.strip()}
             ],
-            temperature=0.1,      # Low temp = consistent, accurate queries
+            temperature=0.1,
             max_tokens=1024,
         )
 
         raw_output = response.choices[0].message.content.strip()
-
-        # Clean up any accidental markdown code blocks
         raw_output = _clean_output(raw_output)
 
-        # Validate MongoDB output is valid JSON
         if db_type.lower() == "mongodb":
             raw_output = _validate_mongo_json(raw_output)
 
@@ -128,24 +115,9 @@ def generate_query(
 
 
 # ─── Helper: Clean LLM output ─────────────────────────────────────────────────
-def _clean_output(text: str) -> str:
-    """Remove markdown code fences and sanitize control characters."""
-    lines = text.splitlines()
-    cleaned = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            continue
-        cleaned.append(line)
-    result = "\n".join(cleaned).strip()
-
-    # ✅ NEW: Remove invalid JSON control characters
-    import re
-    result = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', result)
-    return result
 
 def _clean_output(text: str) -> str:
-    """Remove markdown code fences and clean LLM output."""
+    """Remove markdown code fences, preambles and clean LLM output."""
     lines   = text.splitlines()
     cleaned = []
     for line in lines:
@@ -170,6 +142,9 @@ def _clean_output(text: str) -> str:
             result = result[len(p):].strip()
             break
 
+    # Remove invalid control characters
+    result = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', result)
+
     return result
 
 
@@ -179,7 +154,6 @@ def _validate_mongo_json(text: str) -> str:
     """Ensure MongoDB output is valid parseable JSON."""
     try:
         parsed = json.loads(text)
-        # Ensure required fields exist
         if "collection" not in parsed:
             raise ValueError("MongoDB query missing 'collection' field")
         if "operation" not in parsed:
@@ -188,15 +162,15 @@ def _validate_mongo_json(text: str) -> str:
     except json.JSONDecodeError as e:
         raise ValueError(f"LLM returned invalid MongoDB JSON: {str(e)}\nRaw: {text}")
 
+
+# ─── Helper: Fix JSON strings ─────────────────────────────────────────────────
+
 def _fix_json_string(text: str) -> str:
     """
     Fix common JSON issues from LLM output:
     - Unescaped control characters inside strings
     - Raw newlines inside string values
-    - Tab characters inside strings
     """
-    import re
-
     result  = []
     in_str  = False
     escaped = False
@@ -218,7 +192,6 @@ def _fix_json_string(text: str) -> str:
             continue
 
         if in_str:
-            # Replace raw control characters with escaped versions
             if char == "\n":
                 result.append("\\n")
             elif char == "\r":
@@ -226,7 +199,6 @@ def _fix_json_string(text: str) -> str:
             elif char == "\t":
                 result.append("\\t")
             elif ord(char) < 32:
-                # Other control characters
                 result.append(f"\\u{ord(char):04x}")
             else:
                 result.append(char)
@@ -236,28 +208,25 @@ def _fix_json_string(text: str) -> str:
     return "".join(result)
 
 
+# ─── Helper: Aggressive JSON fix ─────────────────────────────────────────────
+
 def _aggressive_json_fix(text: str) -> str:
     """
     Last resort JSON fixer — extracts JSON between first { and last }
     and applies all known fixes.
     """
-    import re
-
-    # Extract content between first { and last }
     start = text.find("{")
     end   = text.rfind("}")
     if start != -1 and end != -1:
         text = text[start:end + 1]
 
-    # Remove all control characters outside strings
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-
-    # Apply string fixer
     text = _fix_json_string(text)
 
     return text
 
-# ─── Quick test function ──────────────────────────────────────────────────────
+
+# ─── Test function ────────────────────────────────────────────────────────────
 
 def test_llm_engine():
     """Run a quick smoke test for all 4 DB types."""
@@ -301,6 +270,7 @@ def test_llm_engine():
             print(f"ERROR   : {e}")
 
 
+# ─── Conversion Prompt ────────────────────────────────────────────────────────
 
 CONVERSION_PROMPT = """
 You are an expert database query converter.
@@ -328,14 +298,6 @@ def convert_query(
 ) -> dict:
     """
     Convert a query from one database type to another.
-
-    Args:
-        query:     The original query string
-        source_db: Source database type
-        target_db: Target database type
-
-    Returns:
-        dict with converted_query and notes
     """
     if source_db.lower() == target_db.lower():
         return {
@@ -365,70 +327,83 @@ Return ONLY the JSON object as specified.
         raw = response.choices[0].message.content.strip()
         raw = _clean_output(raw)
 
-        # Parse JSON response
+        # ── Parse JSON response ───────────────────────────────────────────────
         try:
-    # ✅ Use raw_unicode_escape to handle edge cases
             result = json.loads(raw)
-        except json.JSONDecodeError as e:
-    # ✅ Try aggressive sanitization before giving up
-            try:
-                sanitized = re.sub(r'[\x00-\x1F\x7F]', 
-                           lambda m: '\\n' if m.group() == '\n' else '', raw)
-                result = json.loads(sanitized)
-            except json.JSONDecodeError:
-                raise ValueError(f"LLM returned invalid JSON: {str(e)}\nRaw: {raw[:200]}")
-        return {
-                "converted_query": raw,
-                "notes": "Note: Could not parse structured response from LLM."
+            if "converted_query" not in result:
+                raise ValueError("Missing converted_query in response")
+            return {
+                "converted_query": result.get("converted_query", ""),
+                "notes":           result.get("notes", None)
             }
+        except json.JSONDecodeError:
+            # Try aggressive sanitization
+            try:
+                sanitized = re.sub(
+                    r'[\x00-\x1F\x7F]',
+                    lambda m: '\\n' if m.group() == '\n' else '',
+                    raw
+                )
+                result = json.loads(sanitized)
+                return {
+                    "converted_query": result.get("converted_query", raw),
+                    "notes":           result.get("notes", None)
+                }
+            except json.JSONDecodeError:
+                # Return raw as converted query if all parsing fails
+                return {
+                    "converted_query": raw,
+                    "notes": "Note: Could not parse structured response from LLM."
+                }
 
     except Exception as e:
         raise RuntimeError(f"Groq conversion error: {str(e)}")
-    
+
+
+# ─── Schema Suggestion Prompt ─────────────────────────────────────────────────
 
 SCHEMA_PROMPT = """
-You are an expert database architect with 15+ years of experience.
-Your job is to analyze requirements and generate a complete, production-ready database schema.
+You are an expert database architect.
+Generate a complete database schema based on the requirements.
 
-Return ONLY a valid JSON object with exactly this structure:
-{{
+CRITICAL RULES:
+- Return ONLY a valid JSON object
+- NO markdown, NO backticks, NO explanation outside JSON
+- NO newlines or tabs inside string values
+- ALL SQL must use \\n for line breaks inside strings
+- Keep string values SHORT and CLEAN
+
+Return this EXACT structure:
+{
   "tables": [
-    {{
+    {
       "table_name": "users",
-      "description": "Stores user account information",
+      "description": "Stores user information",
       "columns": [
-        {{
+        {
           "name": "id",
           "type": "UUID",
           "constraints": "PRIMARY KEY DEFAULT gen_random_uuid()",
           "description": "Unique identifier"
-        }}
+        }
       ],
-      "indexes": [
-        "CREATE INDEX idx_users_email ON users(email);"
-      ]
-    }}
+      "indexes": ["CREATE INDEX idx_users_email ON users(email);"]
+    }
   ],
   "relationships": [
-    "users.id → orders.user_id (One-to-Many)",
-    "orders.id → order_items.order_id (One-to-Many)"
+    "users.id -> orders.user_id (One-to-Many)"
   ],
-  "create_scripts": "-- Full CREATE TABLE scripts here as a single string",
-  "sample_data": "-- Sample INSERT statements here or null if not requested",
-  "design_notes": "Key design decisions and recommendations"
-}}
+  "create_scripts": "CREATE TABLE users (id UUID PRIMARY KEY);\\nCREATE TABLE orders (id UUID PRIMARY KEY);",
+  "sample_data": null,
+  "design_notes": "Brief design notes here"
+}
 
-Rules:
-- Always use appropriate primary keys (UUID for PostgreSQL, BIGINT AUTO_INCREMENT for MySQL)
-- Always add created_at and updated_at timestamps
-- Always add proper foreign keys with ON DELETE behavior
-- Always suggest indexes for frequently queried columns
-- Normalize to at least 3NF unless denormalization is justified
-- For MongoDB: use collections instead of tables, nested documents where appropriate
-- For Oracle: use Oracle-specific syntax (NUMBER, VARCHAR2, SYSDATE etc.)
-- create_scripts must be complete, runnable SQL (or MongoDB commands)
-- Return ONLY the JSON object, no markdown, no explanation outside JSON
+IMPORTANT FOR create_scripts:
+- Put ALL CREATE TABLE statements in ONE single string
+- Use \\n between statements NOT actual newlines
+- Keep it concise
 """
+
 
 def suggest_schema(
     requirement: str,
@@ -437,86 +412,229 @@ def suggest_schema(
 ) -> dict:
     """
     Generate a full database schema based on requirements.
+    Robust version with multiple fallback strategies.
     """
     sample_instruction = (
-        "Include realistic sample INSERT statements for 2-3 rows per table."
+        "Include 2 sample INSERT statements per table in sample_data field."
         if include_sample_data
         else "Set sample_data to null."
     )
 
     user_message = f"""
-Analyze this requirement and generate a complete {db_type.upper()} database schema:
+Generate a {db_type.upper()} database schema for:
 
-REQUIREMENT:
 {requirement}
 
-DATABASE: {db_type.upper()}
 SAMPLE DATA: {sample_instruction}
 
-IMPORTANT:
-- Return ONLY the JSON object
-- Do NOT include any newlines or line breaks inside JSON string values
-- All SQL scripts must be on a single line or use \\n escape sequences
-- No raw newlines inside string values
-
-Return ONLY the JSON object as specified in your instructions.
+STRICT RULES:
+1. Return ONLY the JSON object - nothing else
+2. No actual newlines inside string values - use \\n instead
+3. Keep all string values concise
+4. create_scripts must be ONE string with \\n between statements
 """
 
-    try:
-        response = client.chat.completions.create(
-            model=settings.GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": SCHEMA_PROMPT.strip()},
-                {"role": "user",   "content": user_message.strip()}
-            ],
-            temperature=0.2,
-            max_tokens=4096,
-        )
-
-        raw = response.choices[0].message.content.strip()
-        raw = _clean_output(raw)
-        raw = _fix_json_string(raw)
-
-        # Parse JSON response
+    last_error = None
+    for attempt in range(3):
+        temperature = 0.1 + (attempt * 0.05)
         try:
-            result = json.loads(raw)
+            response = client.chat.completions.create(
+                model=settings.GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": SCHEMA_PROMPT.strip()},
+                    {"role": "user",   "content": user_message.strip()}
+                ],
+                temperature=temperature,
+                max_tokens=4096,
+            )
 
-            # Validate required fields
-            for field in ["tables", "relationships", "create_scripts"]:
-                if field not in result:
-                    raise ValueError(f"Missing field: {field}")
+            raw = response.choices[0].message.content.strip()
+            raw = _clean_output(raw)
 
-            # Clean up create_scripts — convert \n back to real newlines
-            if "create_scripts" in result:
-                result["create_scripts"] = (
-                    result["create_scripts"]
-                    .replace("\\n", "\n")
-                    .replace("\\t", "\t")
-                )
-
-            if result.get("sample_data"):
-                result["sample_data"] = (
-                    result["sample_data"]
-                    .replace("\\n", "\n")
-                    .replace("\\t", "\t")
-                )
-
-            return result
-
-        except json.JSONDecodeError as e:
-            # Last resort — try aggressive cleanup
-            cleaned = _aggressive_json_fix(raw)
-            try:
-                result = json.loads(cleaned)
+            result = _parse_schema_json(raw)
+            if result:
+                result = _sanitize_schema_result(result)
                 return result
-            except Exception:
-                raise ValueError(
-                    f"LLM returned invalid JSON: {str(e)}\n"
-                    f"Raw: {raw[:300]}"
-                )
 
-    except Exception as e:
-        raise RuntimeError(f"Groq schema suggestion error: {str(e)}")
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    raise RuntimeError(
+        f"Failed to generate schema after 3 attempts. "
+        f"Last error: {last_error}"
+    )
+
+
+# ─── Schema JSON Parser ───────────────────────────────────────────────────────
+
+def _parse_schema_json(raw: str) -> dict | None:
+    """
+    Try multiple strategies to parse the JSON response.
+    Returns dict if successful, None if all strategies fail.
+    """
+
+    # Strategy 1 — direct parse
+    try:
+        result = json.loads(raw)
+        if "tables" in result:
+            return result
+    except Exception:
+        pass
+
+    # Strategy 2 — fix control characters then parse
+    try:
+        fixed  = _fix_json_string(raw)
+        result = json.loads(fixed)
+        if "tables" in result:
+            return result
+    except Exception:
+        pass
+
+    # Strategy 3 — extract JSON block then fix
+    try:
+        start = raw.find("{")
+        end   = raw.rfind("}")
+        if start != -1 and end != -1:
+            extracted = raw[start:end + 1]
+            fixed     = _fix_json_string(extracted)
+            result    = json.loads(fixed)
+            if "tables" in result:
+                return result
+    except Exception:
+        pass
+
+    # Strategy 4 — aggressive cleanup
+    try:
+        cleaned = _aggressive_json_fix(raw)
+        result  = json.loads(cleaned)
+        if "tables" in result:
+            return result
+    except Exception:
+        pass
+
+    # Strategy 5 — rebuild minimal valid JSON from partial response
+    try:
+        result = _rebuild_from_partial(raw)
+        if result:
+            return result
+    except Exception:
+        pass
+
+    return None
+
+
+# ─── Schema Result Sanitizer ──────────────────────────────────────────────────
+
+def _sanitize_schema_result(result: dict) -> dict:
+    """Clean up schema result to ensure all values are safe strings."""
+
+    # Fix create_scripts
+    if "create_scripts" in result:
+        cs = result["create_scripts"]
+        if isinstance(cs, list):
+            cs = "\n".join(cs)
+        if isinstance(cs, str):
+            result["create_scripts"] = (
+                cs.replace("\\n", "\n")
+                  .replace("\\t", "\t")
+                  .strip()
+            )
+
+    # Fix sample_data
+    if result.get("sample_data"):
+        sd = result["sample_data"]
+        if isinstance(sd, list):
+            sd = "\n".join(sd)
+        if isinstance(sd, str):
+            result["sample_data"] = (
+                sd.replace("\\n", "\n")
+                  .replace("\\t", "\t")
+                  .strip()
+            )
+
+    # Fix tables
+    for table in result.get("tables", []):
+        if "indexes" in table and isinstance(table["indexes"], list):
+            table["indexes"] = [
+                str(idx).replace("\\n", "\n") for idx in table["indexes"]
+            ]
+        for col in table.get("columns", []):
+            if col.get("constraints"):
+                col["constraints"] = str(col["constraints"]).strip()
+            if col.get("description"):
+                col["description"] = str(col["description"]).strip()
+
+    # Ensure relationships is a list of strings
+    if "relationships" in result:
+        result["relationships"] = [
+            str(r) for r in result["relationships"]
+        ]
+
+    # Ensure design_notes is a string
+    if result.get("design_notes") and not isinstance(result["design_notes"], str):
+        result["design_notes"] = str(result["design_notes"])
+
+    return result
+
+
+# ─── Schema Partial Rebuilder ─────────────────────────────────────────────────
+
+def _rebuild_from_partial(raw: str) -> dict | None:
+    """
+    Last resort — extract table names and build minimal valid schema.
+    """
+    table_names = re.findall(r'"table_name"\s*:\s*"([^"]+)"', raw)
+
+    if not table_names:
+        return None
+
+    tables = []
+    for name in table_names:
+        tables.append({
+            "table_name":  name,
+            "description": f"Table for {name}",
+            "columns": [
+                {
+                    "name":        "id",
+                    "type":        "UUID",
+                    "constraints": "PRIMARY KEY",
+                    "description": "Primary key"
+                },
+                {
+                    "name":        "created_at",
+                    "type":        "TIMESTAMP",
+                    "constraints": "DEFAULT NOW()",
+                    "description": "Creation timestamp"
+                }
+            ],
+            "indexes": []
+        })
+
+    cs_match = re.search(
+        r'"create_scripts"\s*:\s*"((?:[^"\\]|\\.)*)"',
+        raw
+    )
+    create_scripts = cs_match.group(1) if cs_match else (
+        "\n".join([
+            f"CREATE TABLE {t['table_name']} "
+            f"(id UUID PRIMARY KEY, "
+            f"created_at TIMESTAMP DEFAULT NOW());"
+            for t in tables
+        ])
+    )
+
+    return {
+        "tables":         tables,
+        "relationships":  [],
+        "create_scripts": create_scripts.replace("\\n", "\n"),
+        "sample_data":    None,
+        "design_notes":   (
+            "Note: Schema was partially recovered due to LLM response "
+            "formatting issues. Please review and enhance as needed."
+        )
+    }
+
 
 if __name__ == "__main__":
     test_llm_engine()
