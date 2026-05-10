@@ -14,8 +14,11 @@ except Exception:
     # Local development — uses .env
     from dotenv import load_dotenv
     load_dotenv()
-    API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
-    API_KEY      = os.getenv("STREAMLIT_API_KEY", "nlq-key-dev999")
+    API_BASE_URL = os.getenv(
+        "API_BASE_URL",
+        "https://nl2query-chatbot.onrender.com"
+    )
+    API_KEY = os.getenv("STREAMLIT_API_KEY", "nlq-key-dev999")
 
 HEADERS = {"X-API-Key": API_KEY}
 
@@ -135,14 +138,20 @@ with st.sidebar:
     # API status
     st.subheader("API status")
     try:
-        res = requests.get(f"{API_BASE_URL}/health", timeout=3)
+        with st.spinner("Checking..."):
+            res = requests.get(
+                f"{API_BASE_URL}/health",
+                timeout=60
+            )
         if res.status_code == 200:
             data = res.json()
             st.success(f"Online — {data.get('groq_model', '')}")
         else:
             st.error("API returned error")
+    except requests.exceptions.Timeout:
+        st.warning("API waking up — wait 30 sec and refresh")
     except Exception:
-        st.error("API offline — start FastAPI server")
+        st.error("API offline — check Render dashboard")
 
     # Auth status
     st.subheader("Auth status")
@@ -150,6 +159,9 @@ with st.sidebar:
         st.success("API key loaded from .env")
     else:
         st.warning("Using default dev key")
+
+    st.divider()
+    st.caption(f"API: {API_BASE_URL}")
 
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -213,7 +225,7 @@ with tab_chat:
             st.write(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("Generating query..."):
+            with st.spinner("Generating query... (may take 30s if API is waking up)"):
                 try:
                     if mode == "Preview only":
                         response = requests.post(
@@ -224,7 +236,7 @@ with tab_chat:
                                 "schema_context": schema_context or None
                             },
                             headers=HEADERS,
-                            timeout=30
+                            timeout=120
                         )
                         if response.status_code == 200:
                             data = response.json()
@@ -258,7 +270,7 @@ with tab_chat:
                                 "schema_context": schema_context or None
                             },
                             headers=HEADERS,
-                            timeout=30
+                            timeout=120
                         )
                         if response.status_code == 200:
                             data = response.json()
@@ -302,8 +314,21 @@ with tab_chat:
                         else:
                             st.error(f"Error: {response.json().get('detail', 'API error')}")
 
+                except requests.exceptions.Timeout:
+                    st.error(
+                        "⏳ Request timed out — API is waking up. "
+                        "Please wait 30 seconds and try again."
+                    )
                 except requests.exceptions.ConnectionError:
-                    st.error("Cannot connect to API. Make sure FastAPI is running on port 8000.")
+                    st.error(
+                        "❌ Cannot connect to API. "
+                        "Check if Render service is running."
+                    )
+                except requests.exceptions.JSONDecodeError:
+                    st.error(
+                        "⏳ API is starting up — please wait "
+                        "30 seconds and try again."
+                    )
                 except Exception as e:
                     st.error(f"Unexpected error: {str(e)}")
 
@@ -412,7 +437,7 @@ with tab_convert:
                             "target_db": target_db
                         },
                         headers=HEADERS,
-                        timeout=30
+                        timeout=120
                     )
 
                     if response.status_code == 200:
@@ -451,8 +476,15 @@ with tab_convert:
                     else:
                         st.error(f"Conversion failed: {response.json().get('detail', 'API error')}")
 
+                except requests.exceptions.Timeout:
+                    st.error(
+                        "⏳ Request timed out — API is waking up. "
+                        "Please wait 30 seconds and try again."
+                    )
                 except requests.exceptions.ConnectionError:
-                    st.error("Cannot connect to API. Make sure FastAPI is running on port 8000.")
+                    st.error("❌ Cannot connect to API.")
+                except requests.exceptions.JSONDecodeError:
+                    st.error("⏳ API is starting up — please wait 30 seconds and try again.")
                 except Exception as e:
                     st.error(f"Unexpected error: {str(e)}")
 
@@ -581,7 +613,7 @@ with tab_schema:
                         "include_sample_data": include_sample
                     },
                     headers=HEADERS,
-                    timeout=60
+                    timeout=120
                 )
 
                 if response.status_code == 200:
@@ -678,8 +710,15 @@ with tab_schema:
                 else:
                     st.error(f"Schema generation failed: {response.json().get('detail', 'API error')}")
 
+            except requests.exceptions.Timeout:
+                st.error(
+                    "⏳ Request timed out — API is waking up. "
+                    "Please wait 30 seconds and try again."
+                )
             except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to API. Make sure FastAPI is running on port 8000.")
+                st.error("❌ Cannot connect to API.")
+            except requests.exceptions.JSONDecodeError:
+                st.error("⏳ API is starting up — please wait 30 seconds and try again.")
             except Exception as e:
                 st.error(f"Unexpected error: {str(e)}")
 
@@ -711,7 +750,7 @@ with tab_history:
                 res = requests.delete(
                     f"{API_BASE_URL}/history",
                     headers=HEADERS,
-                    timeout=5
+                    timeout=30
                 )
                 if res.status_code == 200:
                     st.success("History cleared!")
@@ -727,19 +766,19 @@ with tab_history:
                 f"{API_BASE_URL}/history/search",
                 params={"keyword": search_term},
                 headers=HEADERS,
-                timeout=5
+                timeout=30
             )
         elif filter_db != "all":
             res = requests.get(
                 f"{API_BASE_URL}/history/{filter_db}",
                 headers=HEADERS,
-                timeout=5
+                timeout=30
             )
         else:
             res = requests.get(
                 f"{API_BASE_URL}/history",
                 headers=HEADERS,
-                timeout=5
+                timeout=30
             )
 
         if res.status_code == 200:
@@ -775,6 +814,8 @@ with tab_history:
         else:
             st.error("Could not load history")
 
+    except requests.exceptions.Timeout:
+        st.warning("⏳ API is waking up — please wait 30 seconds and refresh")
     except Exception as e:
         st.error(f"API error: {str(e)}")
 
@@ -793,7 +834,7 @@ with tab_stats:
         res = requests.get(
             f"{API_BASE_URL}/history/stats",
             headers=HEADERS,
-            timeout=5
+            timeout=30
         )
         if res.status_code == 200:
             stats = res.json()
@@ -826,5 +867,7 @@ with tab_stats:
         else:
             st.error("Could not load stats")
 
+    except requests.exceptions.Timeout:
+        st.warning("⏳ API is waking up — please wait 30 seconds and refresh")
     except Exception as e:
         st.error(f"API error: {str(e)}")
