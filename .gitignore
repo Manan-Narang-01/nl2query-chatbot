@@ -1,6 +1,7 @@
 # .gitignore
 .env
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 query_history.db
@@ -8,3 +9,7 @@ query_history.db
 .venv/
 venv/
 .streamlit/secrets.toml
+.claude/
+*.log
+backend.log
+frontend/frontend.log

@@ -1,7 +1,11 @@
 # main.py
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from routers.chat import router as chat_router
 from routers.convert import router as convert_router
 from models.schemas import HealthResponse
@@ -25,6 +29,14 @@ async def lifespan(app: FastAPI):
     print("App shutting down")
 
 
+# ─── Rate Limiter ─────────────────────────────────────────────────────────────
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["60/minute"]
+)
+
+
 # ─── App Init ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -36,15 +48,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["X-API-Key", "Content-Type"],
 )
 
 

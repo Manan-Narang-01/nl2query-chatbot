@@ -39,5 +39,12 @@ class Settings:
     ORACLE_USER:     str = os.getenv("ORACLE_USER",     "system")
     ORACLE_PASSWORD: str = os.getenv("ORACLE_PASSWORD", "")
 
+    # ── CORS ──────────────────────────────────────────────────────────────────
+    _raw_origins: str = os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:8501,http://localhost:8502"
+    )
+    ALLOWED_ORIGINS: list = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 
 settings = Settings()

@@ -371,13 +371,6 @@ with tab_convert:
 
     st.divider()
 
-    input_query = st.text_area(
-        label="Paste your query here",
-        placeholder=f"Paste your {source_db.upper()} query here...",
-        height=200,
-        key="conv_input"
-    )
-
     st.caption("Quick examples:")
     ex_col1, ex_col2, ex_col3 = st.columns(3)
 
@@ -414,7 +407,14 @@ with tab_convert:
             )
 
     if "conv_prefill" in st.session_state:
-        input_query = st.session_state.pop("conv_prefill")
+        st.session_state["conv_input"] = st.session_state.pop("conv_prefill")
+
+    input_query = st.text_area(
+        label="Paste your query here",
+        placeholder=f"Paste your {source_db.upper()} query here...",
+        height=200,
+        key="conv_input"
+    )
 
     convert_clicked = st.button(
         label=f"🔄 Convert {source_db.upper()} → {target_db.upper()}",
@@ -471,6 +471,8 @@ with tab_convert:
                             "timestamp":       datetime.now().strftime("%H:%M:%S")
                         })
 
+                    elif response.status_code == 400:
+                        st.error(f"Invalid query: {response.json().get('detail', 'Query does not match selected source database.')}")
                     elif response.status_code in (401, 403):
                         st.error("Unauthorized — check your API key in .env")
                     else:
@@ -581,10 +583,11 @@ with tab_schema:
             )
 
     prefill_schema = st.session_state.pop("schema_prefill", "")
+    if prefill_schema:
+        st.session_state["schema_requirement"] = prefill_schema
 
     requirement = st.text_area(
         label="Describe your requirement",
-        value=prefill_schema,
         placeholder=(
             "Example: I want to build a social media app with users, posts, "
             "comments, likes, followers and direct messaging..."
@@ -679,13 +682,74 @@ with tab_schema:
                         st.caption("Copy and run these scripts in your database")
                         lang = "javascript" if schema_db_type == "mongodb" else "sql"
                         st.code(data["create_scripts"], language=lang)
+
+                        st.divider()
+                        st.markdown("### Export SQL Script")
+                        st.caption("Download a ready-to-import script for your database")
+
+                        # ── Build export script ───────────────────────────────
+                        use_transaction = schema_db_type in ("postgresql", "mysql")
+
+                        header = "\n".join([
+                            f"-- ================================================================",
+                            f"-- Database : {schema_db_type.upper()}",
+                            f"-- Tool     : NL2Query Schema Suggestion",
+                            f"-- Tables   : {len(data['tables'])}",
+                            f"-- ================================================================",
+                            ""
+                        ])
+
+                        if use_transaction:
+                            ddl_script = (
+                                header
+                                + "BEGIN;\n\n"
+                                + data["create_scripts"]
+                                + "\n\nCOMMIT;\n"
+                            )
+                        else:
+                            ddl_script = header + data["create_scripts"] + "\n"
+
+                        if data.get("sample_data"):
+                            sample_header = "\n".join([
+                                "",
+                                "-- ================================================================",
+                                "-- Sample Data",
+                                "-- ================================================================",
+                                ""
+                            ])
+                            complete_script = ddl_script + sample_header + data["sample_data"] + "\n"
+                        else:
+                            complete_script = ddl_script
+
+                        # ── Download buttons ──────────────────────────────────
                         ext = "js" if schema_db_type == "mongodb" else "sql"
-                        st.download_button(
-                            label=f"⬇️ Download .{ext} file",
-                            data=data["create_scripts"],
-                            file_name=f"schema_{schema_db_type}.{ext}",
-                            mime="text/plain",
-                            use_container_width=True
+                        col_ddl, col_full = st.columns(2)
+
+                        with col_ddl:
+                            st.download_button(
+                                label=f"⬇️ DDL only (.{ext})",
+                                data=ddl_script,
+                                file_name=f"schema_{schema_db_type}.{ext}",
+                                mime="text/plain",
+                                use_container_width=True,
+                                help="CREATE TABLE statements only"
+                            )
+                        with col_full:
+                            st.download_button(
+                                label=f"⬇️ Complete export (.{ext})",
+                                data=complete_script,
+                                file_name=f"schema_{schema_db_type}_complete.{ext}",
+                                mime="text/plain",
+                                use_container_width=True,
+                                help="DDL + sample data (if generated)"
+                            )
+
+                        st.caption(
+                            f"💡 Import with: "
+                            + (f"`psql -U user -d dbname -f schema_{schema_db_type}.sql`" if schema_db_type == "postgresql"
+                               else f"`mysql -u user -p dbname < schema_{schema_db_type}.sql`" if schema_db_type == "mysql"
+                               else f"`sqlplus user/pass@db @schema_{schema_db_type}.sql`" if schema_db_type == "oracle"
+                               else f"Run in mongosh: `load('schema_{schema_db_type}.js')`")
                         )
 
                     with r_tab4:
